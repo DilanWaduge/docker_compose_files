@@ -1,0 +1,188 @@
+# How to run
+#
+# Start : docker compose -f compose.logs_metrics_traces.yml up otel-collector prometheus jaeger seq aspire-dashboard --build --remove-orphans --force-recreate
+# Stop  : docker compose -f compose.logs_metrics_traces.yml down --rmi local
+#
+# To start all the services, please remove the service names from the Start command.
+
+services:
+  elastic_apm:
+    # https://hub.docker.com/r/elastic/apm-server
+    image: docker.elastic.co/apm/apm-server:7.17.24
+    container_name: elastic_apm
+    hostname: elastic_apm
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kibana:
+        condition: service_healthy
+    cap_add: [ "CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID" ]
+    cap_drop: [ "ALL" ]
+    ports:
+      - 8200:8200
+    command: >
+      apm-server -e
+        -E apm-server.rum.enabled=true
+        -E setup.kibana.host=kibana:5601
+        -E setup.template.settings.index.number_of_replicas=0
+        -E apm-server.kibana.enabled=true
+        -E apm-server.kibana.host=kibana:5601
+        -E output.elasticsearch.hosts=["elasticsearch:9200"]
+    healthcheck:
+      interval: 10s
+      retries: 12
+      test: curl --write-out 'HTTP %{http_code}' --fail --silent --output /dev/null http://localhost:8200/
+
+  elasticsearch:
+    # https://hub.docker.com/_/elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.24
+    container_name: elasticsearch
+    hostname: elasticsearch
+    environment:
+      - bootstrap.memory_lock=true
+      - cluster.name=docker-cluster
+      - cluster.routing.allocation.disk.threshold_enabled=false
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-XX:UseAVX=2 -Xms1g -Xmx1g
+    ulimits:
+      memlock:
+        hard: -1
+        soft: -1
+    volumes:
+      - ./container_data/elasticsearch:/usr/share/elasticsearch/data
+    ports:
+      - 9200:9200
+    healthcheck:
+      interval: 20s
+      retries: 10
+      test: curl -s http://localhost:9200/_cluster/health | grep -vq '"status":"red"'
+
+  kibana:
+    # https://hub.docker.com/_/kibana
+    image: docker.elastic.co/kibana/kibana:7.17.24
+    container_name: kibana
+    hostname: kibana
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - 5601:5601
+    healthcheck:
+      interval: 10s
+      retries: 20
+      test: curl --write-out 'HTTP %{http_code}' --fail --silent --output /dev/null http://localhost:5601/api/status
+
+  jaeger:
+    # https://hub.docker.com/r/jaegertracing/all-in-one
+    image: jaegertracing/all-in-one:1.54.0
+    container_name: jaeger
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    ports:
+      - 6831:6831/udp
+      - 6832:6832/udp
+      - 5778:5778
+      - 16686:16686 # UI
+      # - 4317:4317
+      # - 4318:4318
+      - 14250:14250
+      - 14268:14268
+      - 14269:14269
+      - 9411:9411
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:16686 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  seq:
+    # https://hub.docker.com/r/datalust/seq
+    image: datalust/seq:latest
+    container_name: seq
+    hostname: seq
+    environment:
+      - ACCEPT_EULA=y
+    ports:
+      - 5341:5341
+      - 8080:80
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:5341 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  prometheus:
+    # https://hub.docker.com/r/prom/prometheus
+    image: prom/prometheus:latest
+    container_name: prometheus
+    hostname: prometheus
+    restart: always
+    volumes:
+      - ./configs/prometheus:/etc/prometheus
+      # - ./container_data/prometheus:/etc/prometheus
+    ports:
+      - 9090:9090
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:9090/-/healthy || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  otel-collector:
+    # https://hub.docker.com/r/otel/opentelemetry-collector
+    image: otel/opentelemetry-collector:0.88.0
+    container_name: otel-collector
+    hostname: otel-collector
+    restart: always
+    volumes:
+      - ./configs/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    command: [ "--config=/etc/otel-collector-config.yaml" ]
+    ports:
+      - 1888:1888 # pprof extension
+      - 8888:8888 # Prometheus metrics exposed by the collector
+      - 8889:8889 # Prometheus exporter metrics
+      - 13133:13133 # health_check extension
+      - 4317:4317 # OTLP gRPC receiver
+      - 55679:55679 # zpages extension
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8888/metrics || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      - aspire-dashboard
+      - elastic_apm
+      - jaeger
+      - seq
+      - prometheus
+
+  grafana:
+    # https://hub.docker.com/r/grafana/grafana-oss
+    image: grafana/grafana:latest
+    container_name: grafana
+    hostname: grafana
+    volumes:
+      - ./container_data/grafana:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - 3000:3000
+    depends_on:
+      - prometheus
+
+  aspire-dashboard:
+    # https://learn.microsoft.com/samples/dotnet/aspire-samples/aspire-standalone-dashboard
+    # https://hub.docker.com/r/microsoft/dotnet-aspire-dashboard/
+    # version tested by me: 8.2
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:latest
+    container_name: aspire-dashboard
+    hostname: aspire-dashboard
+    environment:
+      - DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=true
+    ports:
+      - 18888:18888
+      - 18889:18889
+    restart: unless-stopped
