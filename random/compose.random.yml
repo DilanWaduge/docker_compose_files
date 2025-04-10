@@ -1,0 +1,128 @@
+services:
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    container_name: azurite
+    hostname: azurite
+    ports:
+      - 10000:10000
+      - 10001:10001
+      - 10002:10002
+    volumes:
+      - ./container_data/azurite:/data
+      - ./container_data/azurite:/mcr.microsoft.com/azure-storage
+    # command: "azurite-blob -blobHost 0.0.0.0 -/data"
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:10000 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  cosmosdb_emulator:
+    image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:mongodb
+    container_name: cosmosdb_emulator
+    hostname: cosmosdb_emulator
+    ports:
+      - 8081:8081
+      - 10250:10250
+    environment:
+      AZURE_COSMOS_EMULATOR_ENABLE_MONGODB_ENDPOINT: "4.0"
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8081/_explorer/emulator.pem || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  elasticsearch:
+    # https://hub.docker.com/_/elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.24
+    container_name: elasticsearch
+    hostname: elasticsearch
+    environment:
+      - bootstrap.memory_lock=true
+      - cluster.name=docker-cluster
+      - cluster.routing.allocation.disk.threshold_enabled=false
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-XX:UseAVX=2 -Xms1g -Xmx1g
+    ulimits:
+      memlock:
+        hard: -1
+        soft: -1
+    volumes:
+      - ./container_data/elasticsearch:/usr/share/elasticsearch/data
+    ports:
+      - 9200:9200
+    healthcheck:
+      interval: 20s
+      retries: 10
+      test: curl -s http://localhost:9200/_cluster/health | grep -vq '"status":"red"'
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54.0
+    container_name: jaeger
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    ports:
+      - "6831:6831/udp"
+      - "6832:6832/udp"
+      - "5778:5778"
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+      - "14250:14250"
+      - "14268:14268"
+      - "14269:14269"
+      - "9411:9411"
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:16686 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    hostname: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./container_data/mongodb:/data/db
+    healthcheck:
+      test: [ "CMD", "mongo", "--eval", "db.adminCommand('ping')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    hostname: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - ./container_data/rabbitmq:/var/lib/rabbitmq/mnesia
+    healthcheck:
+      test: [ "CMD-SHELL", "rabbitmqctl status" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  sql_server:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sql_server
+    hostname: sql_server
+    ports:
+      - 1433:1433
+    volumes:
+      - ./container_data/sql_server:/var/opt/mssql/data
+    environment:
+      - ACCEPT_EULA=y
+      - SA_PASSWORD=${SQL_SERVER_SA_PASSWORD}
+    healthcheck:
+      test: [ "CMD-SHELL", "/opt/mssql-tools/bin/sqlcmd -S localhost -U SA -P ${SQL_SERVER_SA_PASSWORD} -Q 'SELECT 1'" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
